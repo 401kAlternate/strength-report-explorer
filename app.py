@@ -1,44 +1,71 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from pathlib import Path
 from io import BytesIO
 
 st.set_page_config(page_title='Strength Report Explorer', page_icon='🏋️', layout='wide')
-DEFAULT_FILE = Path(__file__).parent / 'strength-report-2026.csv'
-
-@st.cache_data
-def load_data(uploaded_bytes=None):
-    if uploaded_bytes is None:
-        return pd.read_csv(DEFAULT_FILE)
-    return pd.read_csv(BytesIO(uploaded_bytes))
-
-def clean_value(series):
-    return pd.to_numeric(series, errors='coerce')
 
 st.title('🏋️ Strength Report Explorer')
-st.caption('Interactive Streamlit GUI for exploring strength-report-2026.csv')
+st.caption('Upload a strength-report CSV and explore it interactively — no local Python installation required.')
 
 with st.sidebar:
-    st.header('Data')
-    uploaded = st.file_uploader('Upload another CSV', type=['csv'])
-    data = load_data(uploaded.getvalue() if uploaded else None)
+    st.header('📤 Upload Data')
+    uploaded = st.file_uploader(
+        'Upload your CSV',
+        type=['csv'],
+        help='CSV should contain dataset, key1, key2, key3, metric, and value columns.'
+    )
+
+if uploaded is None:
+    st.info('👋 Upload a CSV in the sidebar to start exploring your data.')
+    st.markdown('''
+    ### Expected columns
+    - `dataset` — report section
+    - `key1`, `key2`, `key3` — dimensions/categories
+    - `metric` — measured statistic
+    - `value` — metric value
+
+    Your file is processed by this Streamlit session. It does not need to be stored in GitHub.
+    ''')
+    st.stop()
+
+@st.cache_data
+def load_data(file_bytes):
+    return pd.read_csv(BytesIO(file_bytes))
+
+data = load_data(uploaded.getvalue())
+required = {'dataset', 'key1', 'key2', 'key3', 'metric', 'value'}
+missing = required - set(data.columns)
+
+if missing:
+    st.error(f'Missing required columns: {", ".join(sorted(missing))}')
+    st.write('Your file contains:', ', '.join(data.columns))
+    st.stop()
+
+with st.sidebar:
     st.divider()
-    st.header('Filters')
+    st.header('🔎 Filters')
     datasets = sorted(data['dataset'].dropna().astype(str).unique())
     selected_datasets = st.multiselect('Dataset sections', datasets, default=datasets)
     filtered = data[data['dataset'].astype(str).isin(selected_datasets)].copy()
+
     metric_options = sorted(filtered['metric'].dropna().astype(str).unique())
-    selected_metrics = st.multiselect('Metrics', metric_options, default=metric_options[:20] if len(metric_options) > 20 else metric_options)
+    selected_metrics = st.multiselect(
+        'Metrics', metric_options,
+        default=metric_options[:20] if len(metric_options) > 20 else metric_options
+    )
     if selected_metrics:
         filtered = filtered[filtered['metric'].astype(str).isin(selected_metrics)]
+
     key1_options = sorted(filtered['key1'].dropna().astype(str).unique())
-    selected_key1 = st.multiselect('Exercise / category (key1)', key1_options, default=[])
+    selected_key1 = st.multiselect('Exercise / category', key1_options, default=[])
     if selected_key1:
         filtered = filtered[filtered['key1'].astype(str).isin(selected_key1)]
-    st.success(f'{len(filtered):,} rows in current view')
 
-filtered['value_num'] = clean_value(filtered['value'])
+    st.success(f'{len(filtered):,} rows')
+
+filtered['value_num'] = pd.to_numeric(filtered['value'], errors='coerce')
+
 c1, c2, c3, c4 = st.columns(4)
 c1.metric('Rows', f'{len(filtered):,}')
 c2.metric('Datasets', filtered['dataset'].nunique())
@@ -54,11 +81,11 @@ with tab_dashboard:
         st.info('No numeric values match the current filters.')
     else:
         summary = numeric.groupby(['dataset', 'metric'], as_index=False)['value_num'].sum().sort_values('value_num', ascending=False).head(30)
-        fig = px.bar(summary, x='value_num', y='metric', color='dataset', orientation='h', title='Top metric totals in the current selection', hover_data=['dataset'])
+        fig = px.bar(summary, x='value_num', y='metric', color='dataset', orientation='h', title='Top metric totals')
         fig.update_layout(height=750, yaxis={'categoryorder': 'total ascending'})
         st.plotly_chart(fig, use_container_width=True)
-        st.subheader('Metric distribution')
         dist = numeric.groupby('metric', as_index=False)['value_num'].agg(['count','min','median','mean','max']).reset_index().sort_values('count', ascending=False)
+        st.subheader('Metric distribution')
         st.dataframe(dist, use_container_width=True, hide_index=True)
 
 with tab_explore:
@@ -68,7 +95,7 @@ with tab_explore:
         st.warning('Choose filters that include numeric values.')
     else:
         dimensions = [c for c in ['dataset','key1','key2','metric'] if numeric[c].notna().any()]
-        x_dim = st.selectbox('X axis', dimensions, index=min(1, len(dimensions)-1))
+        x_dim = st.selectbox('X axis', dimensions)
         color_dim = st.selectbox('Color / group', ['None'] + dimensions)
         chart_type = st.radio('Chart', ['Bar','Line','Scatter'], horizontal=True)
         chart_df = numeric.copy()
@@ -77,9 +104,7 @@ with tab_explore:
             chart_df = chart_df[chart_df[x_dim].isin(top_x)]
         kwargs = dict(data_frame=chart_df, x=x_dim, y='value_num', title=f'{chart_type}: value by {x_dim}')
         if color_dim != 'None': kwargs['color'] = color_dim
-        if chart_type == 'Bar': fig = px.bar(**kwargs)
-        elif chart_type == 'Line': fig = px.line(**kwargs)
-        else: fig = px.scatter(**kwargs)
+        fig = px.bar(**kwargs) if chart_type == 'Bar' else (px.line(**kwargs) if chart_type == 'Line' else px.scatter(**kwargs))
         st.plotly_chart(fig, use_container_width=True)
 
 with tab_data:
@@ -89,5 +114,5 @@ with tab_data:
     st.download_button('⬇️ Download filtered CSV', data=filtered[display_cols].to_csv(index=False).encode('utf-8'), file_name='strength-report-filtered.csv', mime='text/csv')
 
 with tab_about:
-    st.subheader('About this app')
-    st.markdown('This app is a public, GitHub-friendly explorer for **strength-report-2026.csv**.\n\n**Dataset columns**\n- `dataset` — report section\n- `key1`, `key2`, `key3` — dimensions/categories\n- `metric` — measured statistic\n- `value` — metric value\n\n**Run locally**\n```bash\npip install -r requirements.txt\nstreamlit run app.py\n```')
+    st.subheader('About')
+    st.markdown('This is a browser-based Strength Report Explorer. Upload a compatible CSV in the sidebar; no dataset file is required in GitHub.')
